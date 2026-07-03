@@ -32,6 +32,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 OUTPUT = BASE_DIR / "raw-articles-woa"
 PROFILE_DIR = BASE_DIR / ".browser-profile-woa"
 STATE_FILE = OUTPUT / "crawl_state.json"
+SCREENSHOT_DIR = OUTPUT / "screenshots"
 
 IOA_MARKERS = (
     "iOA",
@@ -80,34 +81,64 @@ def page_needs_ioa_login(page: Page) -> bool:
         return True
 
 
-def wait_for_ioa_login(page: Page, context: str = "") -> None:
-    """暂停脚本，等待用户在浏览器中完成 iOA 登录。"""
+def wait_for_ioa_login(page: Page, context: str = "", poll_interval: float = 3.0) -> None:
+    """遇到 iOA 时暂停：自动轮询检测登录完成，无需按 Enter。"""
     label = f"（{context}）" if context else ""
+    SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    shot = SCREENSHOT_DIR / f"ioa_wait_{datetime.now().strftime('%H%M%S')}.png"
+    try:
+        page.screenshot(path=str(shot), full_page=True)
+        log(f"已保存当前页面截图: {shot}")
+    except Exception:
+        pass
+
     log("=" * 60)
-    log(f"检测到 iOA / 登录拦截 {label}")
-    log("请在已打开的浏览器窗口中完成以下操作：")
-    log("  1. 扫码或登录 iOA")
-    log("  2. 确认页面已正常显示知识库内容（非「访问失败」）")
-    log("  3. 回到此终端，按 Enter 继续爬取")
+    log(f"⏸  检测到 iOA / 登录拦截 {label}")
+    log("请在浏览器窗口中完成 iOA 登录（扫码或账号登录）")
+    log("登录成功后脚本将自动检测并继续，无需按 Enter")
+    log("（若终端可交互，也可按 Enter 立即校验，输入 q 退出）")
     log("=" * 60)
+
+    waited = 0
     while True:
+        if not page_needs_ioa_login(page):
+            log("✓ 登录校验通过，继续爬取...")
+            return
+
+        # 非阻塞：有输入则立即校验
         try:
-            choice = input("\n>>> 已完成登录？按 Enter 继续，输入 q 退出: ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            log("用户中断")
-            sys.exit(0)
-        if choice == "q":
-            sys.exit(0)
-        # 刷新检测
-        try:
-            page.reload(wait_until="domcontentloaded", timeout=60000)
-            time.sleep(1.5)
+            import select
+            if select.select([sys.stdin], [], [], 0)[0]:
+                choice = sys.stdin.readline().strip().lower()
+                if choice == "q":
+                    sys.exit(0)
+                try:
+                    page.reload(wait_until="domcontentloaded", timeout=60000)
+                    time.sleep(1)
+                except Exception:
+                    pass
+                if not page_needs_ioa_login(page):
+                    log("✓ 登录校验通过，继续爬取...")
+                    return
+                log("仍未通过登录校验，请继续在浏览器中操作...")
         except Exception:
             pass
-        if not page_needs_ioa_login(page):
-            log("登录校验通过，继续爬取...")
-            return
-        log("仍未通过登录校验，请继续在浏览器中操作后重试。")
+
+        waited += poll_interval
+        if int(waited) % 15 == 0 and waited > 0:
+            log(f"  … 等待登录中（已等待 {int(waited)}s），请在浏览器完成 iOA 登录")
+            try:
+                page.screenshot(path=str(shot), full_page=True)
+            except Exception:
+                pass
+
+        time.sleep(poll_interval)
+        try:
+            # 用户可能在同页完成登录，轻量刷新检测
+            page.reload(wait_until="domcontentloaded", timeout=60000)
+            time.sleep(0.5)
+        except Exception:
+            pass
 
 
 def ensure_logged_in(page: Page, url: str) -> None:
