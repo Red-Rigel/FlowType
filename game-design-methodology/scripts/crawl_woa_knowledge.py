@@ -1,18 +1,14 @@
 #!/usr/bin/env python3
 """
-爬取 game.woa.com 知识库 — 遇到 iOA 自动暂停，等待手动登录后继续。
+爬取 game.woa.com 知识库
 
-用法:
-  python3 crawl_woa_knowledge.py
-  python3 crawl_woa_knowledge.py --start-url https://game.woa.com/knowledge/1013
+推荐流程（云环境看不到浏览器时）:
+  1. 在本机运行: python3 scripts/save_woa_login.py
+  2. 完成 iOA 登录后生成 woa_auth.json
+  3. 上传 woa_auth.json 到本目录
+  4. python3 scripts/crawl_woa_knowledge.py --auth-file woa_auth.json --headless
 
-登录流程:
-  1. 脚本会打开可见浏览器窗口
-  2. 若检测到 iOA/扫码/访问失败页面，自动暂停
-  3. 请在浏览器中完成 iOA 登录
-  4. 回到终端按 Enter 继续（脚本会再次校验是否已登录）
-
-输出: ../raw-articles-woa/
+本机有桌面时也可直接: python3 scripts/crawl_woa_knowledge.py
 """
 from __future__ import annotations
 
@@ -141,12 +137,16 @@ def wait_for_ioa_login(page: Page, context: str = "", poll_interval: float = 3.0
             pass
 
 
-def ensure_logged_in(page: Page, url: str) -> None:
+def ensure_logged_in(page: Page, url: str, *, interactive: bool = True) -> bool:
     log(f"打开页面: {url}")
     page.goto(url, wait_until="domcontentloaded", timeout=120000)
     time.sleep(2)
     if page_needs_ioa_login(page):
-        wait_for_ioa_login(page, "首次访问")
+        if interactive:
+            wait_for_ioa_login(page, "首次访问")
+            return not page_needs_ioa_login(page)
+        return False
+    return True
 
 
 def scroll_and_load_more(page: Page, max_rounds: int = 80) -> None:
@@ -264,35 +264,72 @@ def save_article(art: dict) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="爬取 game.woa.com 知识库（iOA 交互登录）")
+    parser = argparse.ArgumentParser(description="爬取 game.woa.com 知识库")
     parser.add_argument("--start-url", default=DEFAULT_START)
-    parser.add_argument("--headless", action="store_true", help="无头模式（不推荐，无法手动登录）")
+    parser.add_argument("--auth-file", type=Path, help="本机 save_woa_login.py 导出的 woa_auth.json")
+    parser.add_argument("--headless", action="store_true", help="无头模式（配合 --auth-file 在云环境使用）")
     parser.add_argument("--no-resume", action="store_true", help="忽略已爬取记录，全部重抓")
     args = parser.parse_args()
 
-    if args.headless:
-        log("警告: 无头模式无法手动登录 iOA，建议使用默认有界面模式")
+    use_auth = args.auth_file and args.auth_file.exists()
+    if args.auth_file and not use_auth:
+        log(f"错误: 找不到登录文件 {args.auth_file}")
+        log("请在本机运行: python3 scripts/save_woa_login.py")
+        sys.exit(1)
+
+    if not use_auth and args.headless:
+        log("无 --auth-file 时不能使用 --headless（云环境看不到浏览器无法登录）")
+        log("请在本机运行 save_woa_login.py 导出 woa_auth.json 后上传使用")
+        sys.exit(1)
 
     OUTPUT.mkdir(parents=True, exist_ok=True)
-    PROFILE_DIR.mkdir(parents=True, exist_ok=True)
     state = {"done_urls": [], "manifest": []} if args.no_resume else load_state()
     done = set(state.get("done_urls", []))
 
-    log("启动浏览器（有界面模式，默认）...")
-    log(f"用户数据目录: {PROFILE_DIR}（登录状态会保留）")
+    if use_auth:
+        log(f"使用登录文件: {args.auth_file}（无头模式）")
+    else:
+        log("启动浏览器（有界面模式）— 仅适合本机有桌面的环境")
+        PROFILE_DIR.mkdir(parents=True, exist_ok=True)
     log(f"输出目录: {OUTPUT}")
 
     with sync_playwright() as p:
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=str(PROFILE_DIR),
-            headless=args.headless,
-            viewport={"width": 1400, "height": 900},
-            locale="zh-CN",
-            args=["--start-maximized"] if not args.headless else [],
-        )
-        page = context.pages[0] if context.pages else context.new_page()
+        if use_auth:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                storage_state=str(args.auth_file),
+                viewport={"width": 1400, "height": 900},
+                locale="zh-CN",
+            )
+            page = context.new_page()
+        else:
+            context = p.chromium.launch_persistent_context(
+                user_data_dir=str(PROFILE_DIR),
+                headless=False,
+                viewport={"width": 1400, "height": 900},
+                locale="zh-CN",
+                args=["--start-maximized"],
+            )
+            page = context.pages[0] if context.pages else context.new_page()
+            browser = None  # type: ignore
 
-        ensure_logged_in(page, args.start_url)
+        interactive = not use_auth
+        if not ensure_logged_in(page, args.start_url, interactive=interactive):
+            log("=" * 60)
+            log("仍被 iOA 拦截。云环境看不到浏览器，请改用本机登录方案：")
+            log("  1. 在本机（已连 iOA）运行:")
+            log("     cd game-design-methodology")
+            log("     pip install playwright && playwright install chromium")
+            log("     python3 scripts/save_woa_login.py")
+            log("  2. 将生成的 woa_auth.json 上传到 game-design-methodology/")
+            log("  3. 在云环境运行:")
+            log("     python3 scripts/crawl_woa_knowledge.py --auth-file woa_auth.json --headless")
+            log("=" * 60)
+            if browser:
+                browser.close()
+            else:
+                context.close()
+            sys.exit(1)
         scroll_and_load_more(page)
         all_links = collect_article_links(page)
         log(f"共发现 {len(all_links)} 篇文章链接")
@@ -330,7 +367,10 @@ def main() -> None:
             json.dumps(state.get("manifest", []), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        context.close()
+        if browser:
+            browser.close()
+        else:
+            context.close()
 
     log(f"全部完成，共 {len(state.get('manifest', []))} 篇 → {OUTPUT}")
 

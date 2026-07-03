@@ -33,44 +33,29 @@ game-design-methodology/
 
 ## 内网爬取（game.woa.com/knowledge/1013）
 
-需 iOA 登录。脚本会**自动检测登录页并暂停**，等你操作完成后继续。
+需 iOA 登录。**云环境看不到浏览器**，请阅读：
 
-### 一键启动
+👉 **[内网爬取登录指南.md](内网爬取登录指南.md)**
+
+### 快速流程（看不到浏览器时）
 
 ```bash
+# === 在本机（有 iOA）执行 ===
 cd game-design-methodology
+pip install playwright && playwright install chromium
+python3 scripts/save_woa_login.py    # 浏览器登录后按 Enter，生成 woa_auth.json
+
+# === 上传 woa_auth.json 到云环境后执行 ===
+python3 scripts/crawl_woa_knowledge.py --auth-file woa_auth.json --headless
+```
+
+### 本机有桌面时
+
+```bash
 ./scripts/run_crawl_interactive.sh
 ```
 
-或：
-
-```bash
-python3 scripts/crawl_woa_knowledge.py --start-url https://game.woa.com/knowledge/1013
-```
-
-### 操作流程
-
-1. 脚本打开**可见浏览器**（登录状态保存在 `.browser-profile-woa/`）
-2. 出现 `检测到 iOA / 登录拦截` 时停下
-3. 在浏览器中完成 iOA 扫码/登录，确认知识库页面正常显示
-4. 回到终端按 **Enter** 继续（脚本会再次校验）
-5. 自动翻页、逐篇抓取，输出到 `raw-articles-woa/`
-
-爬取过程中若 session 过期，会再次暂停等待登录。进度保存在 `raw-articles-woa/crawl_state.json`，中断后可续爬。
-
-### 当前运行状态
-
-若已在后台启动，可查看日志：
-
-```bash
-tail -f game-design-methodology/crawl.log
-```
-
-附加到 tmux 会话（在终端按 Enter 继续爬取）：
-
-```bash
-tmux -f /exec-daemon/tmux.portal.conf attach-session -t woa-knowledge-crawl
-```
+输出目录：`raw-articles-woa/`，进度：`raw-articles-woa/crawl_state.json`
 
 
 ## 核心命题

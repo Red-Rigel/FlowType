@@ -2,3 +2,4 @@
 raw-articles-woa/
 crawl.log
 *.log
+woa_auth.json
